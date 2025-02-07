@@ -15,9 +15,8 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 
-# 数据加载函数（仅使用train文件夹）
 def load_data(batch_size, val_ratio):
-    # 数据增强配置
+
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
@@ -26,22 +25,20 @@ def load_data(batch_size, val_ratio):
                              std=[0.229, 0.224, 0.225])
     ])
 
-    # 加载训练集
+
     train_dataset = ImageFolder('datasets/train', transform=train_transform)
 
-    # 划分训练集和验证集
+
     val_size = int(len(train_dataset) * val_ratio)
     train_size = len(train_dataset) - val_size
     train_set, val_set = random_split(train_dataset, [train_size, val_size])
 
-    # 创建数据加载器
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=4)
 
     return train_loader, val_loader, train_dataset.class_to_idx
 
 
-# 训练函数
 def train(model, device, train_loader, criterion, optimizer, epoch, writer):
     model.train()
     total_loss = 0
@@ -72,7 +69,6 @@ def train(model, device, train_loader, criterion, optimizer, epoch, writer):
     return avg_loss, avg_acc
 
 
-# 验证函数
 def validate(model, device, val_loader, criterion, epoch, writer):
     model.eval()
     total_loss = 0
@@ -97,37 +93,29 @@ def validate(model, device, val_loader, criterion, epoch, writer):
     return avg_loss, avg_acc
 
 
-# 主函数
 def main():
     args = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # 创建保存目录
     os.makedirs(args.save_dir, exist_ok=True)
     writer = SummaryWriter(args.save_dir)
 
-    # 加载数据（仅使用train文件夹）
     train_loader, val_loader, class_dict = load_data(args.batch_size, args.val_ratio)
     class_names = list(class_dict.keys())
 
-    # 初始化模型
     model = MyModel(num_classes=len(class_names), dropout=args.dropout).to(device)
 
-    # 加载预训练权重
     if args.pretrained:
         model.load_state_dict(torch.load(args.pretrained))
 
-    # 定义损失函数和优化器
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
-    # 训练循环
     best_acc = 0.0
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc = train(model, device, train_loader, criterion, optimizer, epoch, writer)
         val_loss, val_acc = validate(model, device, val_loader, criterion, epoch, writer)
 
-        # 保存最佳模型
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), os.path.join(args.save_dir, 'best_model.pth'))
@@ -137,14 +125,12 @@ def main():
         print(f'Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%')
         print('-' * 50)
 
-    # 保存最终模型
     torch.save(model.state_dict(), os.path.join(args.save_dir, 'final_model.pth'))
 
-    # 关闭TensorBoard writer
+
     writer.close()
 
 
-# 参数解析
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=10)
