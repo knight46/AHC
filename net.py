@@ -155,6 +155,25 @@ class AttentionBase(nn.Module):
         out = self.proj(out)
         return out
 
+class MyModel(nn.Module):
+    def __init__(self, num_classes=2, dropout=0.0):
+        super().__init__()
+        self.initial_conv = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
+            LayerNorm(64, 'WithBias'),
+            nn.GELU()
+        )
+        self.detail_feature = DetailFeatureExtractor(num_layers=3)
+        self.base_feature = BaseFeatureExtractor(dim=64, num_heads=8)
+        self.classifier = Classifier_Head(64, num_classes, dropout)
+
+    def forward(self, x):
+        x = self.initial_conv(x)
+        x = self.detail_feature(x)
+        x = self.base_feature(x)
+        x = self.classifier(x)
+        return x
+
 """
 LayerNorm
 """
