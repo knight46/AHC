@@ -142,8 +142,6 @@ class AttentionBase(nn.Module):
                       head=self.num_heads)
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
-        # transpose: -> [batch_size, num_heads, embed_dim_per_head, num_patches + 1]
-        # @: multiply -> [batch_size, num_heads, num_patches + 1, num_patches + 1]
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
 
