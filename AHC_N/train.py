@@ -28,6 +28,7 @@ class PairedDataset(Dataset):
         return real_img, aigc_img
 
     def _load_image(self, filename):
+        # filename = str(filename).split('/')[-1]
         image = plt.imread(os.path.join(self.root_dir, filename))
         if image.shape[-1] == 4:  # 处理RGBA图像
             image = image[..., :3]
@@ -44,7 +45,7 @@ def create_pairs(csv_path):
 
     # 创建配对字典
     pair_dict = {}
-    for _, rovfvdsw in df.iterrows():
+    for _, row in df.iterrows():
         filename = os.path.splitext(row['file_name'])[0]
         if filename not in pair_dict:
             pair_dict[filename] = {'real': None, 'aigc': None}
@@ -56,7 +57,7 @@ def create_pairs(csv_path):
 
     # 生成有效配对
     for pair in pair_dict.values():
-        if pair['real'] and pair['aigc']:
+        if pair['real'] or pair['aigc']:
             pairs.append(pair)
     return pairs
 
@@ -109,6 +110,7 @@ def main(args):
     best_loss = float('inf')
     all_losses = []
 
+
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
@@ -149,13 +151,13 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='AIGC Detection Training')
-    parser.add_argument('--data_root', type=str, default='../datasets/train_data',
+    parser.add_argument('--data_root', type=str, default='../datasets/train',
                         help='Root directory of dataset')
     parser.add_argument('--csv_path', type=str, default='../datasets/train.csv',
                         help='Path to training CSV file')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=2,
+    parser.add_argument('--batch_size', type=int, default=4,
                         help='Input batch size for training')
     parser.add_argument('--img_size', type=int, default=256,
                         help='Input image size')
