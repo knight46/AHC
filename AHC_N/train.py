@@ -1,173 +1,122 @@
-import argparse
 import os
-import numpy as np
-import pandas as pd
+import time
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
-import matplotlib.pyplot as plt
+import argparse
+from torch import nn, optim
+from torch.utils.data import DataLoader
+from dataset import AIGCDataset
 from net import AIGCClassificationNet, info_nce_loss
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+from torch.cuda.amp import GradScaler, autocast
+
+# 训练参数配置
+parser = argparse.ArgumentParser(description='AIGC Classification Training')
+parser.add_argument('--data-root', default='../datasets', type=str)
+parser.add_argument('--csv-path', default='../datasets/train.csv', type=str)
+parser.add_argument('--epochs', default=50, type=int)
+parser.add_argument('--batch-size', default=4, type=int)
+parser.add_argument('--lr', default=1e-4, type=float)
+parser.add_argument('--save-dir', default='./runs', type=str)
+args = parser.parse_args()
+
+# 创建输出目录
+timestamp = time.strftime("%Y%m%d_%H%M%S")
+output_dir = os.path.join(args.save_dir, timestamp)
+os.makedirs(output_dir, exist_ok=True)
+
+# 数据集和数据加载器
+train_dataset = AIGCDataset(args.csv_path, args.data_root)
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+
+# 初始化模型和优化器
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = AIGCClassificationNet().to(device)
+optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+criterion = nn.CrossEntropyLoss()  # 分类损失
+scaler = GradScaler()  # 混合精度
+
+# 训练记录
+best_loss = float('inf')
+train_losses = []
 
 
-class PairedDataset(Dataset):
-    """处理配对数据的自定义数据集"""
-
-    def __init__(self, pairs, root_dir, transform=None):
-        self.pairs = pairs
-        self.root_dir = root_dir
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.pairs)
-
-    def __getitem__(self, idx):
-        pair = self.pairs[idx]
-        real_img = self._load_image(pair['real'])
-        aigc_img = self._load_image(pair['aigc'])
-        return real_img, aigc_img
-
-    def _load_image(self, filename):
-        # filename = str(filename).split('/')[-1]
-        image = plt.imread(os.path.join(self.root_dir, filename))
-        if image.shape[-1] == 4:  # 处理RGBA图像
-            image = image[..., :3]
-        image = transforms.ToPILImage()(image)
-        if self.transform:
-            image = self.transform(image)
-        return image
-
-
-def create_pairs(csv_path):
-    """从CSV创建配对数据"""
-    df = pd.read_csv(csv_path)
-    pairs = []
-
-    # 创建配对字典
-    pair_dict = {}
-    for _, row in df.iterrows():
-        filename = os.path.splitext(row['file_name'])[0]
-        if filename not in pair_dict:
-            pair_dict[filename] = {'real': None, 'aigc': None}
-
-        if row['label'] == 0:
-            pair_dict[filename]['real'] = row['file_name']
-        else:
-            pair_dict[filename]['aigc'] = row['file_name']
-
-    # 生成有效配对
-    for pair in pair_dict.values():
-        if pair['real'] or pair['aigc']:
-            pairs.append(pair)
-    return pairs
-
-
-def get_transforms(img_size=256):
-    """数据增强配置"""
-    return transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-    ])
-
-
-def plot_loss_curve(losses, save_path):
-    """绘制损失曲线"""
-    plt.figure(figsize=(10, 6))
-    plt.plot(losses, label='Training Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Training Loss Curve')
-    plt.legend()
-    plt.savefig(save_path)
+def save_confusion_matrix(y_true, y_pred, epoch):
+    """保存混淆矩阵"""
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title(f'Confusion Matrix (Epoch {epoch})')
+    plt.savefig(os.path.join(output_dir, f'cm_epoch{epoch}.png'))
     plt.close()
 
 
-def main(args):
-    # 设备设置
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def train(epoch):
+    global best_loss
+    model.train()
+    total_loss = 0.0
 
-    # 创建配对数据
-    pairs = create_pairs(args.csv_path)
+    # 用于混淆矩阵
+    all_preds = []
+    all_labels = []
 
-    # 数据转换
-    transform = get_transforms(args.img_size)
+    for batch_idx, (imgs, labels) in enumerate(train_loader):
+        imgs = imgs.to(device)
+        labels = labels.to(device)
 
-    # 数据集和数据加载器
-    dataset = PairedDataset(pairs, args.data_root, transform)
-    loader = DataLoader(dataset, batch_size=args.batch_size,
-                        shuffle=True, num_workers=4, pin_memory=True)
+        # 混合精度训练
+        with autocast():
+            _, _, real_logits, aigc_logits = model(imgs, imgs)  # 使用相同图片作为输入
+            loss = criterion(real_logits, labels)  # 分类损失
 
-    # 模型初始化
-    model = AIGCClassificationNet(embed_dim=256).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    scaler = torch.cuda.amp.GradScaler()
+        # 反向传播
+        optimizer.zero_grad()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
-    # 训练记录
-    best_loss = float('inf')
-    all_losses = []
+        # 记录损失
+        total_loss += loss.item()
 
+        # 记录预测结果
+        all_preds.extend(torch.argmax(real_logits, dim=1).cpu().numpy())
+        all_labels.extend(labels.cpu().numpy())
 
-    for epoch in range(args.epochs):
-        model.train()
-        epoch_loss = 0.0
+        if batch_idx % 100 == 0:
+            print(f'Train Epoch: {epoch} [{batch_idx * len(imgs)}/{len(train_loader.dataset)}'
+                  f' ({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
 
-        for real_imgs, aigc_imgs in loader:
-            real_imgs = real_imgs.to(device)
-            aigc_imgs = aigc_imgs.to(device)
+    # 记录平均损失
+    avg_loss = total_loss / len(train_loader)
+    train_losses.append(avg_loss)
 
-            optimizer.zero_grad()
-
-            with torch.cuda.amp.autocast():
-                real_emb, aigc_emb = model(real_imgs, aigc_imgs)
-                loss = info_nce_loss(real_emb, aigc_emb)
-
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-            epoch_loss += loss.item() * real_imgs.size(0)
-
-        # 计算平均损失
-        avg_loss = epoch_loss / len(dataset)
-        all_losses.append(avg_loss)
-
-        # 保存最佳模型
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            torch.save(model.state_dict(), 'best_model.pth')
-
-        print(f'Epoch {epoch + 1}/{args.epochs} | Loss: {avg_loss:.4f}')
-
-    # 保存最终模型
-    torch.save(model.state_dict(), 'final_model.pth')
+    # 保存最佳模型
+    if avg_loss < best_loss:
+        best_loss = avg_loss
+        torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
 
     # 绘制损失曲线
-    plot_loss_curve(all_losses, 'train_loss_curve.png')
+    plt.figure()
+    plt.plot(train_losses, label='Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, 'loss_curve.png'))
+    plt.close()
+
+    # 保存混淆矩阵
+    save_confusion_matrix(all_labels, all_preds, epoch)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='AIGC Detection Training')
-    parser.add_argument('--data_root', type=str, default='../datasets/train',
-                        help='Root directory of dataset')
-    parser.add_argument('--csv_path', type=str, default='../datasets/train.csv',
-                        help='Path to training CSV file')
-    parser.add_argument('--epochs', type=int, default=50,
-                        help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=4,
-                        help='Input batch size for training')
-    parser.add_argument('--img_size', type=int, default=256,
-                        help='Input image size')
-    parser.add_argument('--lr', type=float, default=1e-4,
-                        help='Learning rate')
+    for epoch in range(1, args.epochs + 1):
+        start_time = time.time()
+        train(epoch)
+        print(f'Epoch {epoch} completed in {time.time() - start_time:.2f}s')
 
-    args = parser.parse_args()
-
-    # 确保输出目录存在
-    os.makedirs('results', exist_ok=True)
-
-    main(args)
-    #/home/azathothlxl/Experiments/AHC/datasets
+    # 保存最终模型
+    torch.save(model.state_dict(), os.path.join(output_dir, 'final_model.pth'))
+    print(f'Training complete. Results saved to: {output_dir}')

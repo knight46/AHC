@@ -5,7 +5,7 @@ from torch import Tensor
 
 
 class PositionalEncoding2D(nn.Module):
-    """优化后的二维位置编码"""
+    """轻量化的二维位置编码"""
 
     def __init__(self, d_model: int):
         super().__init__()
@@ -19,15 +19,15 @@ class PositionalEncoding2D(nn.Module):
 
 
 class SharedTransformer(nn.Module):
-    """内存优化的共享编码器"""
+    """轻量化的共享编码器"""
 
-    def __init__(self, in_channels=3, embed_dim=256, num_heads=8):
+    def __init__(self, in_channels=3, embed_dim=128, num_heads=4):
         super().__init__()
         # 更高效的patch嵌入
         self.patch_embed = nn.Sequential(
-            nn.Conv2d(in_channels, embed_dim // 4, kernel_size=7, stride=4, padding=3),  # 下采样
+            nn.Conv2d(in_channels, embed_dim // 2, kernel_size=7, stride=4, padding=3),  # 下采样
             nn.GELU(),
-            nn.Conv2d(embed_dim // 4, embed_dim, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(embed_dim // 2, embed_dim, kernel_size=3, stride=1, padding=1),
         )
         self.pos_encoder = PositionalEncoding2D(embed_dim)
 
@@ -36,16 +36,13 @@ class SharedTransformer(nn.Module):
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
                 nhead=num_heads,
-                dim_feedforward=2 * embed_dim,  # 减少FFN维度
+                dim_feedforward=embed_dim,  # 减少FFN维度
                 activation='gelu',
                 batch_first=True,
                 norm_first=True  # 更好的训练稳定性
             ),
-            num_layers=3  # 减少层数
+            num_layers=2  # 减少层数
         )
-
-        # 输出投影
-        self.proj = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, x: Tensor):
         # 输入形状: [B, C, H, W]
@@ -61,16 +58,35 @@ class SharedTransformer(nn.Module):
 
         # 自适应池化
         x = x.mean(dim=1)  # [B, E]
-        return F.normalize(self.proj(x), p=2, dim=1)
+        return x
+
+
+class MLPClassifier(nn.Module):
+    """轻量化的MLP分类头"""
+    def __init__(self, embed_dim=128, num_classes=2):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.GELU(),
+            nn.Linear(embed_dim // 2, num_classes)
+        )
+
+    def forward(self, x):
+        return self.mlp(x)
 
 
 class AIGCClassificationNet(nn.Module):
-    def __init__(self, embed_dim=256):
+    def __init__(self, embed_dim=128, num_classes=2):
         super().__init__()
         self.shared_encoder = SharedTransformer(embed_dim=embed_dim)
+        self.classifier = MLPClassifier(embed_dim, num_classes)
 
     def forward(self, real_images: Tensor, aigc_images: Tensor):
-        return self.shared_encoder(real_images), self.shared_encoder(aigc_images)
+        real_emb = self.shared_encoder(real_images)
+        aigc_emb = self.shared_encoder(aigc_images)
+        real_logits = self.classifier(real_emb)
+        aigc_logits = self.classifier(aigc_emb)
+        return real_emb, aigc_emb, real_logits, aigc_logits
 
 
 def info_nce_loss(real_emb: Tensor, aigc_emb: Tensor, temperature=0.1):
@@ -85,19 +101,25 @@ def info_nce_loss(real_emb: Tensor, aigc_emb: Tensor, temperature=0.1):
     # 对称损失计算
     return (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)) / 2
 
+def main():
+    # 设定超参数
+    batch_size = 8
+    image_size = (256, 256)
+
+    # 随机生成实例图像和AIGC图像
+    real_images = torch.randn(batch_size, 3, *image_size)
+    aigc_images = torch.randn(batch_size, 3, *image_size)
+
+    # 前向传播
+    model = AIGCClassificationNet(embed_dim=256, num_classes=2)
+
+    # 获取嵌入表示和标志
+    real_emb, aigc_emb, _, _ = model(real_images, aigc_images)
+
+    # 计算对比损失
+    loss = info_nce_loss(real_emb, aigc_emb)
+
+    print(f"对比损失: {loss.item()}")
 
 if __name__ == "__main__":
-    # 验证内存使用
-    net = AIGCClassificationNet().half().to('cuda')  # 半精度优化
-
-    # 测试不同尺寸的输入
-    for size in [128, 256]:
-        real = torch.randn(64, 3, size, size, device='cuda', dtype=torch.half)
-        aigc = torch.randn(64, 3, size, size, device='cuda', dtype=torch.half)
-
-        with torch.cuda.amp.autocast():
-            r_emb, a_emb = net(real, aigc)
-            loss = info_nce_loss(r_emb, a_emb)
-
-        print(f"Input size {size}x{size} | Loss: {loss.item():.4f}")
-        torch.cuda.empty_cache()
+    main()
