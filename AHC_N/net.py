@@ -62,7 +62,6 @@ class SharedTransformer(nn.Module):
 
 
 class MLPClassifier(nn.Module):
-    """轻量化的MLP分类头"""
     def __init__(self, embed_dim=128, num_classes=2):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -90,33 +89,25 @@ class AIGCClassificationNet(nn.Module):
 
 
 def info_nce_loss(real_emb: Tensor, aigc_emb: Tensor, temperature=0.1):
-    """内存优化的对比损失"""
     batch_size = real_emb.size(0)
     device = real_emb.device
 
-    # 使用矩阵乘法优化
     logits = torch.einsum('bd,cd->bc', real_emb, aigc_emb) / temperature
     labels = torch.arange(batch_size, device=device)
 
-    # 对称损失计算
     return (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)) / 2
 
 def main():
-    # 设定超参数
     batch_size = 8
     image_size = (256, 256)
 
-    # 随机生成实例图像和AIGC图像
     real_images = torch.randn(batch_size, 3, *image_size)
     aigc_images = torch.randn(batch_size, 3, *image_size)
 
-    # 前向传播
     model = AIGCClassificationNet(embed_dim=256, num_classes=2)
 
-    # 获取嵌入表示和标志
     real_emb, aigc_emb, _, _ = model(real_images, aigc_images)
 
-    # 计算对比损失
     loss = info_nce_loss(real_emb, aigc_emb)
 
     print(f"对比损失: {loss.item()}")
