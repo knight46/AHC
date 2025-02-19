@@ -13,7 +13,6 @@ class PositionalEncoding2D(nn.Module):
         self.pos_conv = nn.Conv2d(d_model, d_model, kernel_size=3, padding=1, groups=d_model)
 
     def forward(self, x: Tensor):
-        # 使用深度可分离卷积生成位置信息
         pos_feature = self.pos_conv(x)
         return x + pos_feature
 
@@ -36,10 +35,10 @@ class SharedTransformer(nn.Module):
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
                 nhead=num_heads,
-                dim_feedforward=embed_dim,  # 减少FFN维度
+                dim_feedforward=embed_dim,
                 activation='gelu',
                 batch_first=True,
-                norm_first=True  # 更好的训练稳定性
+                norm_first=True
             ),
             num_layers=2  # 减少层数
         )
@@ -47,7 +46,7 @@ class SharedTransformer(nn.Module):
     def forward(self, x: Tensor):
         # 输入形状: [B, C, H, W]
         x = self.patch_embed(x)  # [B, E, H/4, W/4]
-        x = self.pos_encoder(x)  # 加入位置编码
+        x = self.pos_encoder(x)
 
         # 转换为序列
         B, E, H, W = x.size()
