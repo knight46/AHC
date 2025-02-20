@@ -28,8 +28,8 @@ def preprocess_image(image_path, transform):
 
 def main():
     csv_file = "../datasets/test.csv"
-    weights_path = "./runs/20250218_195014/best_model.pth"
-    output_file = "test.csv"
+    weights_path = "./runs/20250219_21/best_model.pth"
+    output_file = "./runs/20250219_21/test.csv"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

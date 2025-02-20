@@ -86,30 +86,48 @@ class AIGCClassificationNet(nn.Module):
         aigc_logits = self.classifier(aigc_emb)
         return real_emb, aigc_emb, real_logits, aigc_logits
 
+def supervised_contrastive_loss(real_emb: Tensor, aigc_emb: Tensor, temperature=0.1, eps=1e-8):
 
-def info_nce_loss(real_emb: Tensor, aigc_emb: Tensor, temperature=0.1):
-    batch_size = real_emb.size(0)
     device = real_emb.device
+    batch_size = real_emb.size(0)
+    real_emb = F.normalize(real_emb, p=2, dim=1)
+    aigc_emb = F.normalize(aigc_emb, p=2, dim=1)
 
-    logits = torch.einsum('bd,cd->bc', real_emb, aigc_emb) / temperature
-    labels = torch.arange(batch_size, device=device)
+    embeddings = torch.cat([real_emb, aigc_emb], dim=0)
+    labels = torch.cat([torch.zeros(batch_size), torch.ones(batch_size)], dim=0).to(device)
 
-    return (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)) / 2
+    sim_matrix = torch.matmul(embeddings, embeddings.T) / temperature
 
-def main():
-    batch_size = 8
-    image_size = (256, 256)
+    mask = torch.eye(2 * batch_size, dtype=torch.bool, device=device)
+    sim_matrix = sim_matrix.masked_fill(mask, -1e4)
 
-    real_images = torch.randn(batch_size, 3, *image_size)
-    aigc_images = torch.randn(batch_size, 3, *image_size)
+    labels_equal = labels.unsqueeze(0) == labels.unsqueeze(1)
+    mask_positive = labels_equal.float() - torch.eye(2 * batch_size, device=device)
 
-    model = AIGCClassificationNet(embed_dim=256, num_classes=2)
+    exp_sim = torch.exp(sim_matrix)
+    denom = exp_sim.sum(dim=1, keepdim=True).clamp(min=eps)
 
-    real_emb, aigc_emb, _, _ = model(real_images, aigc_images)
+    log_prob = sim_matrix - torch.log(denom)
 
-    loss = info_nce_loss(real_emb, aigc_emb)
+    num_positives = mask_positive.sum(dim=1)
+    loss = - (mask_positive * log_prob).sum(dim=1) / (num_positives + eps)
 
-    print(f"对比损失: {loss.item()}")
+    return loss.mean()
 
-if __name__ == "__main__":
-    main()
+# def main():
+#     batch_size = 8
+#     image_size = (256, 256)
+#
+#     real_images = torch.randn(batch_size, 3, *image_size)
+#     aigc_images = torch.randn(batch_size, 3, *image_size)
+#
+#     model = AIGCClassificationNet(embed_dim=256, num_classes=2)
+#
+#     real_emb, aigc_emb, _, _ = model(real_images, aigc_images)
+#
+#     loss = info_nce_loss(real_emb, aigc_emb)
+#
+#     print(f"对比损失: {loss.item()}")
+
+# if __name__ == "__main__":
+#     main()
